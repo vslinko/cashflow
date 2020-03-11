@@ -10,11 +10,13 @@
   "license": "ISC",
   "dependencies": {
     "@tinkoff/invest-openapi-js-sdk": "^1.2.3",
+    "cheerio": "^1.0.0-rc.3",
     "csv-parse": "^4.8.8",
     "csv-stringify": "^5.3.6",
     "dotenv": "^8.2.0",
     "luxon": "^1.22.0",
     "node-fetch": "^2.6.0",
-    "pg": "^7.18.2"
+    "pg": "^7.18.2",
+    "pg-copy-streams": "^2.2.2"
   }
 }

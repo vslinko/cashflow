@@ -1,3 +1,8 @@
+drop view if exists income;
+drop view if exists outcome;
+drop table if exists operations_mapping;
+drop table if exists operations;
+
 create table operations (
   operation_time timestamp,
   payment_date date,
@@ -23,7 +28,7 @@ create table operations_mapping (
     primary key (category, description)
 );
 
-create or replace view outcome as
+create view outcome as
 select
     o.*,
     om.custom_category,
@@ -39,7 +44,7 @@ where
     and not (o.category = 'Наличные' and o.operation_time between date '2018-04-18' and date '2018-04-20')
     and om.custom_category_group not in ('Перевод между счетами');
 
-create or replace view income as
+create view income as
 select
     o.*,
     om.custom_category,
