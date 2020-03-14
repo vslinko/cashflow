@@ -73,7 +73,7 @@ async function main() {
       `)
     ).rows.map(row => [row.ticker, DateTime.fromJSDate(row.started_at)]);
 
-    tickers.push(["USD000UTSTOM", DateTime.min(...tickers.map(r => r[1]))]);
+    tickers.push(["USD000UTSTOM", DateTime.fromISO('2016-01-01')]);
 
     await conn.query(`truncate portfolio_prices`);
 

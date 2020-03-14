@@ -1,7 +1,9 @@
+drop function if exists convert_price(text, text, date, numeric);
+drop function if exists convert_price(text, text, timestamp with time zone, numeric);
+drop view if exists currency_exchange_rates;
 drop view if exists portfolio_currencies;
 drop view if exists portfolio_current_performance;
 drop materialized view if exists portfolio_performance;
-drop view if exists portfolio_operations_rub;
 drop view if exists portfolio_bonds_ndk;
 drop table if exists portfolio_bonds_payments;
 drop table if exists portfolio_prices;
@@ -96,24 +98,6 @@ from
         limit 1
     ) as prev on true;
 
-create view portfolio_operations_rub as
-select
-    *,
-    case when currency = 'USD' then
-        price * (select c from portfolio_prices where ticker = 'USD000UTSTOM' and date_trunc('day', time) <= po.date order by time desc limit 1)
-    else price end as price_rub,
-    case when currency = 'USD' then
-        fee * (select c from portfolio_prices where ticker = 'USD000UTSTOM' and date_trunc('day', time) <= po.date order by time desc limit 1)
-    else fee end as fee_rub,
-    case when currency = 'USD' then
-        nkd * (select c from portfolio_prices where ticker = 'USD000UTSTOM' and date_trunc('day', time) <= po.date order by time desc limit 1)
-    else nkd end as nkd_rub,
-    case when currency = 'USD' then
-        nominal * (select c from portfolio_prices where ticker = 'USD000UTSTOM' and date_trunc('day', time) <= po.date order by time desc limit 1)
-    else nominal end as nominal_rub
-from
-    portfolio_operations po;
-
 create materialized view portfolio_performance as
 select
     dates.date,
@@ -133,10 +117,15 @@ select
     calc2.total,
     agg.quantity > 0 or operations_count > 0 as visible
 from
-    generate_series(
-        (select min(date) from portfolio_operations),
-        current_date,
-        interval '1' day
+    (
+        select
+            cast(date as date) date
+        from
+            generate_series(
+                (select min(date) from portfolio_operations),
+                current_date,
+                interval '1' day
+            ) date
     ) as dates(date)
     full outer join (
         (
@@ -162,6 +151,18 @@ from
                 and currency != 'RUB'
             group by
                 ticker
+        ) union (
+            select
+                ticker,
+                min(currency) as original_currency,
+                'USD' as currency
+            from
+                portfolio_operations
+            where
+                ticker != 'MONEY'
+                and currency != 'USD'
+            group by
+                ticker
         )
     ) as tickers on true
     left join lateral (
@@ -172,41 +173,29 @@ from
             end) as quantity,
             sum(case
                 when operation = 'BUY' and type = 'S' then
-                    case when tickers.currency != 'RUB' then price else price_rub end * quantity
+                    convert_price(tickers.original_currency, tickers.currency, date, price) * quantity
                 when operation = 'BUY' and type = 'B' then
-                    case when tickers.currency != 'RUB' then price else price_rub end / 100 * nominal * quantity
+                    convert_price(tickers.original_currency, tickers.currency, date, price) / 100 * nominal * quantity
             end) as spent,
-            sum(case when tickers.currency != 'RUB' then fee else fee_rub end) as fees,
+            sum(convert_price(tickers.original_currency, tickers.currency, date, fee)) as fees,
             sum(case
                 when operation = 'SELL' and type = 'S' then
-                    case when tickers.currency != 'RUB' then price else price_rub end * quantity
+                    convert_price(tickers.original_currency, tickers.currency, date, price) * quantity
             end) as got,
             sum(case
                 when operation = 'BUY' and type = 'D' then
-                    case when tickers.currency != 'RUB' then price else price_rub end
+                    convert_price(tickers.original_currency, tickers.currency, date, price)
             end) as divs,
             sum(case when date = dates.date then 1 else 0 end) as operations_count
         from
-             portfolio_operations_rub
+             portfolio_operations
         where
              (ticker = tickers.ticker or asset = tickers.ticker)
              and date <= dates.date
     ) as agg on true
     left join lateral (
         select
-            c as price
-        from
-            portfolio_prices
-        where
-            ticker = 'USD000UTSTOM'
-            and date_trunc('day', time) <= dates.date
-        order by
-            time desc
-        limit 1
-    ) as usdrub on true
-    left join lateral (
-        select
-            nkd
+            convert_price(tickers.original_currency, tickers.currency, dates.date, nkd) as nkd
         from
             portfolio_bonds_ndk
         where
@@ -215,10 +204,7 @@ from
     ) as nkd on true
     left join lateral (
         select
-            case when tickers.original_currency = 'USD' and tickers.currency = 'RUB' then
-                c * usdrub.price
-            when tickers.original_currency != tickers.currency then null
-            else c end as current_price
+            convert_price(tickers.original_currency, tickers.currency, dates.date, c) as current_price
         from
             portfolio_prices
         where
@@ -245,6 +231,7 @@ order by
 create view portfolio_current_performance as
 select
     ticker,
+    original_currency,
     currency,
     quantity,
     current_value,
@@ -261,13 +248,14 @@ from
     (
         select
             ticker,
+            original_currency,
             currency,
             quantity,
             current_value,
             total,
             case when outcome > 0 then total / outcome else 0 end as total_p,
-            case when currency = 'RUB' then
-                current_value / (select sum(current_value) from portfolio_performance where date = (select max(date) from portfolio_performance) and currency = 'RUB')
+            case when currency in ('RUB', 'USD') then
+                current_value / (select sum(current_value) from portfolio_performance where date = (select max(date) from portfolio_performance) and currency = o.currency)
             end as share,
             (select current_value from portfolio_performance where ticker_full = o.ticker_full and date = o.date - interval '1' day) value_1_day,
             (select current_value from portfolio_performance where ticker_full = o.ticker_full and date = o.date - interval '7' day) value_1_week,
@@ -296,3 +284,47 @@ from
     portfolio_operations
 group by
     currency;
+
+create view currency_exchange_rates as
+select
+    time,
+    'USD/RUB' as rate,
+    c as value
+from
+    portfolio_prices
+where
+    ticker = 'USD000UTSTOM';
+
+create function convert_price(f text, t text, w timestamp with time zone, v numeric) returns numeric as $$
+declare
+    direct_rate text;
+    indirect_rate text;
+    r numeric;
+begin
+    if f = t then
+        return v;
+    end if;
+
+    direct_rate := f || '/' || t;
+    indirect_rate := t || '/' || f;
+
+    select
+        case when rate = direct_rate then value else 1 / value end into r
+    from
+        currency_exchange_rates
+    where
+        rate in (direct_rate, indirect_rate)
+        and time <= w
+    order by
+        time desc
+    limit 1;
+
+    return v * r;
+end;
+$$ language plpgsql;
+
+create function convert_price(f text, t text, w date, v numeric) returns numeric as $$
+begin
+    return convert_price(f, t, cast(w as timestamptz) + interval '23:59:59', v);
+end;
+$$ language plpgsql;
