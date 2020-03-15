@@ -2,10 +2,16 @@
 require("dotenv").config();
 const pg = require("pg");
 const fs = require("fs");
+const chalk = require("chalk");
+const fork = require("child_process").fork;
 const OpenAPI = require("@tinkoff/invest-openapi-js-sdk");
 const { DateTime } = require("luxon");
 const stringifyCsv = require("csv-stringify/lib/sync");
 const copyFrom = require("pg-copy-streams").from;
+const argv = require("yargs").option("refresh", {
+  boolean: true,
+  default: true
+}).argv;
 
 const apiURL = "https://api-invest.tinkoff.ru/openapi/sandbox";
 const socketURL = "wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws";
@@ -48,6 +54,8 @@ async function getCandles(api, ticker, from) {
 
 async function main() {
   try {
+    process.stdout.write(chalk.yellow("Syncing prices\n"));
+
     const api = new OpenAPI({ apiURL, secretToken, socketURL });
 
     const conn = new pg.Client({
@@ -73,35 +81,59 @@ async function main() {
       `)
     ).rows.map(row => [row.ticker, DateTime.fromJSDate(row.started_at)]);
 
-    tickers.push(["USD000UTSTOM", DateTime.fromISO('2016-01-01')]);
+    tickers.push(["USD000UTSTOM", DateTime.fromISO("2016-01-01")]);
 
     await conn.query(`truncate portfolio_prices`);
 
     for (const [ticker, startedAt] of tickers) {
-      const candles = await getCandles(api, ticker, startedAt);
+      try {
+        process.stdout.write(`\t${ticker} `);
+        const candles = await getCandles(api, ticker, startedAt);
 
-      const csv = stringifyCsv(candles, {
-        header: true
-      });
-      fs.writeFileSync(tempFile, csv);
+        const csv = stringifyCsv(candles, {
+          header: true
+        });
+        fs.writeFileSync(tempFile, csv);
 
-      await new Promise((resolve, reject) => {
-        const stream = conn.query(
-          copyFrom(`copy portfolio_prices from stdin with csv header;`)
-        );
-        const fileStream = fs.createReadStream(tempFile);
-        fileStream.on("error", reject);
-        stream.on("error", reject);
-        stream.on("end", resolve);
-        fileStream.pipe(stream);
-      });
+        await new Promise((resolve, reject) => {
+          const stream = conn.query(
+            copyFrom(`copy portfolio_prices from stdin with csv header;`)
+          );
+          const fileStream = fs.createReadStream(tempFile);
+          fileStream.on("error", reject);
+          stream.on("error", reject);
+          stream.on("end", resolve);
+          fileStream.pipe(stream);
+        });
+        process.stdout.write(chalk.green("OK\n"));
+      } catch (err) {
+        process.stdout.write(chalk.red("ERROR\n"));
+        throw err;
+      }
     }
 
     if (fs.existsSync(tempFile)) {
       fs.unlinkSync(tempFile);
     }
 
-    await conn.query(`refresh materialized view portfolio_performance`);
+    if (argv.refresh) {
+      await new Promise((resolve, reject) => {
+        const p = fork(
+          __dirname + "/refresh-materialized-views.js",
+          ["--views", "portfolio_performance"],
+          {
+            stdio: "inherit"
+          }
+        );
+        p.on("exit", code => {
+          if (code > 0) {
+            reject(new Error(`Exited with code ${code}`));
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
 
     conn.end();
   } catch (err) {

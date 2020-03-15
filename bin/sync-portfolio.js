@@ -3,9 +3,15 @@ require("dotenv").config();
 const pg = require("pg");
 const fs = require("fs");
 const fetch = require("node-fetch");
+const chalk = require("chalk");
+const fork = require("child_process").fork;
 const { DateTime } = require("luxon");
 const stringifyCsv = require("csv-stringify/lib/sync");
 const copyFrom = require("pg-copy-streams").from;
+const argv = require("yargs").option("refresh", {
+  boolean: true,
+  default: true
+}).argv;
 
 const tempFile = process.cwd() + "/temp.csv";
 
@@ -49,6 +55,8 @@ async function get(cookies) {
 
 async function main() {
   try {
+    process.stdout.write(chalk.yellow("Syncing portfolio\n"));
+
     const conn = new pg.Client({
       host: process.env.PSQL_HOST,
       port: process.env.PSQL_PORT,
@@ -58,49 +66,73 @@ async function main() {
     });
     await conn.connect();
 
-    const cookies = await login();
-    const result = await get(cookies);
+    try {
+      process.stdout.write("\tsyncing ");
+      const cookies = await login();
+      const result = await get(cookies);
 
-    const operations = Object.values(result.transactions).map(r => ({
-      id: r.id,
-      transaction_code: r.transaction_code || null,
-      asset: r.asset ? r.asset.replace(/:.+$/, "") : null,
-      assetname: r.assetname || null,
-      date: r.date
-        ? DateTime.fromFormat(r.date, "yyyy-MM-dd HH:mm:ss").toISODate()
-        : null,
-      price: r.price ? Number(r.price) : null,
-      ticker: r.ticker ? r.ticker.replace(/:.+$/, "") : null,
-      quantity: r.quantity ? Number(r.quantity) : null,
-      fee: r.fee ? Number(r.fee) : null,
-      nkd: r.nkd ? Number(r.nkd) : null,
-      nominal: r.nominal ? Number(r.nominal) : null,
-      note: r.note || "-",
-      currency: r.currency || null,
-      type: r.type || null,
-      operation: r.operation || null
-    }));
+      const operations = Object.values(result.transactions).map(r => ({
+        id: r.id,
+        transaction_code: r.transaction_code || null,
+        asset: r.asset ? r.asset.replace(/:.+$/, "") : null,
+        assetname: r.assetname || null,
+        date: r.date
+          ? DateTime.fromFormat(r.date, "yyyy-MM-dd HH:mm:ss").toISODate()
+          : null,
+        price: r.price ? Number(r.price) : null,
+        ticker: r.ticker ? r.ticker.replace(/:.+$/, "") : null,
+        quantity: r.quantity ? Number(r.quantity) : null,
+        fee: r.fee ? Number(r.fee) : null,
+        nkd: r.nkd ? Number(r.nkd) : null,
+        nominal: r.nominal ? Number(r.nominal) : null,
+        note: r.note || "-",
+        currency: r.currency || null,
+        type: r.type || null,
+        operation: r.operation || null
+      }));
 
-    const csv = stringifyCsv(operations, {
-      header: true
-    });
-    fs.writeFileSync(tempFile, csv);
+      const csv = stringifyCsv(operations, {
+        header: true
+      });
+      fs.writeFileSync(tempFile, csv);
 
-    await conn.query(`truncate portfolio_operations`);
-    await new Promise((resolve, reject) => {
-      const stream = conn.query(
-        copyFrom(`copy portfolio_operations from stdin with csv header;`)
-      );
-      const fileStream = fs.createReadStream(tempFile);
-      fileStream.on("error", reject);
-      stream.on("error", reject);
-      stream.on("end", resolve);
-      fileStream.pipe(stream);
-    });
-
-    await conn.query(`refresh materialized view portfolio_performance`);
+      await conn.query(`truncate portfolio_operations`);
+      await new Promise((resolve, reject) => {
+        const stream = conn.query(
+          copyFrom(`copy portfolio_operations from stdin with csv header;`)
+        );
+        const fileStream = fs.createReadStream(tempFile);
+        fileStream.on("error", reject);
+        stream.on("error", reject);
+        stream.on("end", resolve);
+        fileStream.pipe(stream);
+      });
+      process.stdout.write(chalk.green("OK\n"));
+    } catch (err) {
+      process.stdout.write(chalk.red("ERROR\n"));
+      throw err;
+    }
 
     fs.unlinkSync(tempFile);
+
+    if (argv.refresh) {
+      await new Promise((resolve, reject) => {
+        const p = fork(
+          __dirname + "/refresh-materialized-views.js",
+          ["--views", "portfolio_performance"],
+          {
+            stdio: "inherit"
+          }
+        );
+        p.on("exit", code => {
+          if (code > 0) {
+            reject(new Error(`Exited with code ${code}`));
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
 
     conn.end();
   } catch (err) {

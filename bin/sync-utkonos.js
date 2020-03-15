@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 require("dotenv").config();
 const pg = require("pg");
+const chalk = require("chalk");
 const cheerio = require("cheerio");
 const fs = require("fs");
 const fetch = require("node-fetch");
@@ -160,6 +161,8 @@ async function get(cookies, id) {
 
 async function main() {
   try {
+    process.stdout.write(chalk.yellow("Syncing utkonos\n"));
+
     const conn = new pg.Client({
       host: process.env.PSQL_HOST,
       port: process.env.PSQL_PORT,
@@ -171,30 +174,39 @@ async function main() {
 
     const knownIds = (
       await conn.query(`select distinct order_id from utkonos_orders`)
-    ).rows.map(row => row.id);
+    ).rows.map(row => row.order_id);
 
     const cookies = await login();
     const ids = (await getList(cookies)).filter(id => !knownIds.includes(id));
 
     for (const id of ids) {
-      const positions = await get(cookies, id);
-      await conn.query(`delete from utkonos_orders where order_id = $1`, [id]);
+      try {
+        process.stdout.write(`\t${id} `);
+        const positions = await get(cookies, id);
+        await conn.query(`delete from utkonos_orders where order_id = $1`, [
+          id
+        ]);
 
-      const csv = stringifyCsv(positions, {
-        header: true
-      });
-      fs.writeFileSync(tempFile, csv);
+        const csv = stringifyCsv(positions, {
+          header: true
+        });
+        fs.writeFileSync(tempFile, csv);
 
-      await new Promise((resolve, reject) => {
-        const stream = conn.query(
-          copyFrom(`copy utkonos_orders from stdin with csv header;`)
-        );
-        const fileStream = fs.createReadStream(tempFile);
-        fileStream.on("error", reject);
-        stream.on("error", reject);
-        stream.on("end", resolve);
-        fileStream.pipe(stream);
-      });
+        await new Promise((resolve, reject) => {
+          const stream = conn.query(
+            copyFrom(`copy utkonos_orders from stdin with csv header;`)
+          );
+          const fileStream = fs.createReadStream(tempFile);
+          fileStream.on("error", reject);
+          stream.on("error", reject);
+          stream.on("end", resolve);
+          fileStream.pipe(stream);
+        });
+        process.stdout.write(chalk.green("OK\n"));
+      } catch (err) {
+        process.stdout.write(chalk.red("ERROR\n"));
+        throw err;
+      }
     }
 
     if (fs.existsSync(tempFile)) {
