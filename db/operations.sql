@@ -42,6 +42,7 @@ where
     and (o.card != '*6427' or o.card is null)
     and not (o.category = 'Переводы/иб' and o.description = 'Вячеслав Слинько')
     and not (o.category = 'Наличные' and o.operation_time between date '2018-04-18' and date '2018-04-20')
+    and not (o.category = 'Вклад' and date_trunc('day', o.operation_time) = date '2020-03-18')
     and om.custom_category_group not in ('Перевод между счетами');
 
 create view income as
