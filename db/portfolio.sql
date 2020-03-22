@@ -328,3 +328,52 @@ begin
     return convert_price(f, t, cast(w as timestamptz) + interval '23:59:59', v);
 end;
 $$ language plpgsql;
+
+create view portfolio_performance_week_agg as
+with data as (
+select
+    date,
+    cast(date_trunc('week', date) as date) as wdate,
+    ticker,
+    original_currency,
+    currency,
+    ticker_full,
+    last_value(quantity) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as quantity,
+    last_value(spent) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as spent,
+    last_value(fees) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as fees,
+    last_value(got) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as got,
+    last_value(divs) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as divs,
+    last_value(current_price) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as current_price,
+    last_value(current_value) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as current_value,
+    last_value(outcome) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as outcome,
+    last_value(income) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as income,
+    last_value(total) over (partition by ticker_full, date_trunc('week', date) order by date nulls first) as total,
+    bool_or(visible) over (partition by ticker_full, date_trunc('week', date)) as visible,
+    date = last_value(date) over (partition by ticker_full, date_trunc('week', date)) as is_last
+from
+    portfolio_performance
+order by
+    date desc,
+    ticker_full
+)
+select
+    date,
+    wdate,
+    ticker,
+    original_currency,
+    currency,
+    ticker_full,
+    quantity,
+    spent,
+    fees,
+    got,
+    divs,
+    current_price,
+    current_value,
+    outcome,
+    income,
+    total
+from
+    data
+where
+    is_last and visible;

@@ -5,6 +5,7 @@ const chalk = require("chalk");
 const { DateTime } = require("luxon");
 const parseCsv = require("csv-parse/lib/sync");
 const stringifyCsv = require("csv-stringify/lib/sync");
+const Iconv = require("iconv").Iconv;
 
 const tempFile = process.cwd() + "/temp.csv";
 
@@ -32,7 +33,8 @@ async function main() {
       try {
         process.stdout.write(`\t${file} `);
         const data = fs.readFileSync("data/" + file);
-        const rows = parseCsv(data, {
+        const iconv = new Iconv("cp1251", "utf-8");
+        const rows = parseCsv(iconv.convert(data), {
           columns: true,
           delimiter: ";"
         }).map(row => ({
