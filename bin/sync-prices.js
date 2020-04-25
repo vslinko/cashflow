@@ -13,9 +13,9 @@ const argv = require("yargs").option("refresh", {
   default: true
 }).argv;
 
-const apiURL = "https://api-invest.tinkoff.ru/openapi/sandbox";
-const socketURL = "wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws";
-const secretToken = process.env.TINKOFF_SANDBOX_TOKEN;
+const apiURL = process.env.TINKOFF_API_URL;
+const socketURL = process.env.TINKOFF_SOCKET_URL;
+const secretToken = process.env.TINKOFF_TOKEN;
 
 const tempFile = process.cwd() + "/temp.csv";
 

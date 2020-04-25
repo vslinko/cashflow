@@ -9,7 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@tinkoff/invest-openapi-js-sdk": "^1.2.3",
+    "@tinkoff/invest-openapi-js-sdk": "^1.2.6",
     "chalk": "^3.0.0",
     "cheerio": "^1.0.0-rc.3",
     "csv-parse": "^4.8.8",
